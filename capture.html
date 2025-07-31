@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Screen Capture</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background: rgba(0, 0, 0, 0.5);
+      cursor: crosshair;
+      user-select: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+    }
+
+    #canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      z-index: 10;
+    }
+
+    .selection-info {
+      position: absolute;
+      background: rgba(0, 0, 0, 0.8);
+      color: white;
+      padding: 5px 10px;
+      font-size: 12px;
+      border-radius: 3px;
+      pointer-events: none;
+      z-index: 20;
+      font-family: Arial, sans-serif;
+    }
+
+    .capture-hint {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(0, 0, 0, 0.8);
+      color: white;
+      padding: 20px;
+      border-radius: 5px;
+      text-align: center;
+      z-index: 30;
+      font-family: Arial, sans-serif;
+    }
+
+    .capture-hint h3 {
+      margin: 0 0 10px 0;
+    }
+
+    .capture-hint p {
+      margin: 5px 0;
+      font-size: 14px;
+    }
+
+    .window-highlight {
+      position: absolute;
+      border: 2px solid #00ff00;
+      background: rgba(0, 255, 0, 0.1);
+      pointer-events: none;
+      z-index: 15;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <div class="selection-info" id="selectionInfo" style="display: none;"></div>
+  <div class="capture-hint" id="captureHint">
+    <h3>화면 캡처</h3>
+    <p>마우스를 드래그하여 영역을 선택하세요</p>
+    <p>ESC 키를 눌러 취소</p>
+  </div>
+  <div class="window-highlight" id="windowHighlight" style="display: none;"></div>
+
+  <script>
+    const { ipcRenderer, desktopCapturer } = require('electron');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const selectionInfo = document.getElementById('selectionInfo');
+    const captureHint = document.getElementById('captureHint');
+    const windowHighlight = document.getElementById('windowHighlight');
+
+    let isSelecting = false;
+    let startX = 0;
+    let startY = 0;
+    let currentX = 0;
+    let currentY = 0;
+    let captureMode = 'rectangle';
+    let screens = [];
+    let windows = [];
+
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+
+    window.addEventListener('resize', () => {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    });
+
+    ipcRenderer.on('set-capture-mode', (event, mode) => {
+      captureMode = mode;
+      updateHint();
+      if (mode === 'window') {
+        loadWindowList().then(() => {
+          // 창 목록 로드 완료 후 바로 선택기 표시
+          setTimeout(() => {
+            showWindowSelector();
+          }, 500);
+        });
+      } else if (mode === 'fullscreen') {
+        captureFullScreen();
+      }
+    });
+
+    function updateHint() {
+      const hints = {
+        rectangle: '마우스를 드래그하여 사각형 영역을 선택하세요',
+        fixed: '고정 영역을 설정하세요',
+        window: '창 목록을 불러오는 중... 잠시만 기다려주세요',
+        freeform: '자유롭게 영역을 그려주세요',
+        fullscreen: '전체 화면을 캡처합니다...'
+      };
+      
+      captureHint.querySelector('p').textContent = hints[captureMode] || hints.rectangle;
+    }
+
+    async function loadScreenshots() {
+      try {
+        const sources = await desktopCapturer.getSources({
+          types: ['screen'],
+          thumbnailSize: {
+            width: window.screen.width * window.devicePixelRatio,
+            height: window.screen.height * window.devicePixelRatio
+          }
+        });
+
+        screens = sources;
+      } catch (error) {
+        console.error('Error loading screenshots:', error);
+      }
+    }
+
+    async function loadWindowList() {
+      try {
+        console.log('Loading window list...');
+        
+        // 권한 요청을 위해 먼저 화면 캡처 시도
+        const screenSources = await desktopCapturer.getSources({
+          types: ['screen'],
+          thumbnailSize: { width: 100, height: 100 }
+        });
+        console.log('Screen sources loaded:', screenSources.length);
+        
+        // 이제 창 목록 가져오기
+        const sources = await desktopCapturer.getSources({
+          types: ['window'],
+          thumbnailSize: { width: 300, height: 200 }
+        });
+        
+        console.log('Raw sources:', sources.length);
+        sources.forEach((source, index) => {
+          console.log(`Source ${index}:`, source.name, source.id);
+        });
+        
+        // 모든 창을 포함 (디버깅용)
+        windows = sources.filter(source => 
+          source.name && 
+          source.name.trim() !== ''
+        );
+        console.log('Filtered windows:', windows.length);
+        windows.forEach(win => console.log('Window:', win.name));
+        
+        if (windows.length === 0) {
+          console.warn('No windows found after filtering. All sources:');
+          sources.forEach(source => console.log('All source:', source));
+        }
+        
+      } catch (error) {
+        console.error('Error loading windows:', error);
+        console.error('Error details:', error.message, error.stack);
+        windows = [];
+      }
+    }
+
+    function captureFullScreen() {
+      ipcRenderer.invoke('capture-screen', {
+        x: 0,
+        y: 0,
+        width: window.innerWidth,
+        height: window.innerHeight
+      });
+    }
+
+    document.addEventListener('mousedown', (e) => {
+      if (captureMode === 'window') {
+        // 창 모드에서는 클릭하면 바로 창 선택기 표시
+        e.preventDefault();
+        showWindowSelector();
+        return;
+      }
+
+      isSelecting = true;
+      startX = e.clientX;
+      startY = e.clientY;
+      currentX = e.clientX;
+      currentY = e.clientY;
+      captureHint.style.display = 'none';
+    });
+
+    document.addEventListener('mousemove', (e) => {
+      if (captureMode === 'window') {
+        highlightWindowAtPoint(e.clientX, e.clientY);
+        return;
+      }
+
+      if (!isSelecting) return;
+
+      currentX = e.clientX;
+      currentY = e.clientY;
+
+      drawSelection();
+      updateSelectionInfo();
+    });
+
+    document.addEventListener('mouseup', (e) => {
+      if (!isSelecting || captureMode === 'window') return;
+
+      isSelecting = false;
+
+      const bounds = getSelectionBounds();
+      if (bounds.width > 5 && bounds.height > 5) {
+        const saveAsFixed = captureMode === 'fixed';
+        ipcRenderer.invoke('capture-screen', bounds, saveAsFixed);
+      } else {
+        ipcRenderer.invoke('cancel-capture');
+      }
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        ipcRenderer.invoke('cancel-capture');
+      } else if (e.key === 'F12' || e.key === 'F11') {
+        // 개발자 도구 열기
+        const { ipcRenderer } = require('electron');
+        ipcRenderer.send('open-dev-tools');
+      }
+    });
+
+    function drawSelection() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      
+      const bounds = getSelectionBounds();
+      
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      
+      ctx.clearRect(bounds.x, bounds.y, bounds.width, bounds.height);
+      
+      ctx.strokeStyle = '#0080ff';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
+      
+      ctx.fillStyle = '#0080ff';
+      const handleSize = 8;
+      const handles = [
+        { x: bounds.x, y: bounds.y },
+        { x: bounds.x + bounds.width / 2, y: bounds.y },
+        { x: bounds.x + bounds.width, y: bounds.y },
+        { x: bounds.x + bounds.width, y: bounds.y + bounds.height / 2 },
+        { x: bounds.x + bounds.width, y: bounds.y + bounds.height },
+        { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height },
+        { x: bounds.x, y: bounds.y + bounds.height },
+        { x: bounds.x, y: bounds.y + bounds.height / 2 }
+      ];
+      
+      handles.forEach(handle => {
+        ctx.fillRect(handle.x - handleSize / 2, handle.y - handleSize / 2, handleSize, handleSize);
+      });
+    }
+
+    function getSelectionBounds() {
+      const x = Math.min(startX, currentX);
+      const y = Math.min(startY, currentY);
+      const width = Math.abs(currentX - startX);
+      const height = Math.abs(currentY - startY);
+      
+      return { x, y, width, height };
+    }
+
+    function updateSelectionInfo() {
+      const bounds = getSelectionBounds();
+      selectionInfo.textContent = `${bounds.width} × ${bounds.height}`;
+      selectionInfo.style.left = bounds.x + 'px';
+      selectionInfo.style.top = (bounds.y - 30) + 'px';
+      selectionInfo.style.display = 'block';
+    }
+
+    function getWindowAtPoint(x, y) {
+      // 실제 구현에서는 창의 위치를 정확히 찾기 어려우므로
+      // 창 목록을 보여주고 사용자가 선택하도록 함
+      if (windows.length > 0) {
+        showWindowSelector();
+        return null;
+      }
+      return null;
+    }
+
+    function highlightWindowAtPoint(x, y) {
+      // 창 하이라이트는 창 목록 선택기로 대체
+      windowHighlight.style.display = 'none';
+    }
+
+    function captureWindow(windowId) {
+      ipcRenderer.invoke('capture-window', windowId);
+    }
+
+    async function showWindowSelector() {
+      console.log('showWindowSelector called, windows.length:', windows.length);
+      
+      // 항상 최신 창 목록을 다시 로드
+      await loadWindowList();
+      
+      if (windows.length === 0) {
+        console.log('No windows found, showing alert');
+        alert(`캡처할 수 있는 창이 없습니다. 
+        
+가능한 원인:
+- 화면 캡처 권한이 없음 (시스템 설정에서 권한 확인)  
+- 다른 프로그램이 실행되지 않음
+- Electron 버전 호환성 문제
+
+F12 키를 눌러 개발자 콘솔을 확인해보세요.`);
+        ipcRenderer.invoke('cancel-capture');
+        return;
+      }
+      
+      console.log('Displaying window selector with', windows.length, 'windows');
+      displayWindowSelector();
+    }
+
+    function displayWindowSelector() {
+      // 창 목록 표시
+      const windowList = document.createElement('div');
+      windowList.id = 'windowSelector';
+      windowList.innerHTML = `
+        <div style="
+          position: fixed;
+          top: 50%;
+          left: 50%;
+          transform: translate(-50%, -50%);
+          background: rgba(0, 0, 0, 0.9);
+          color: white;
+          padding: 20px;
+          border-radius: 10px;
+          max-width: 800px;
+          max-height: 600px;
+          overflow-y: auto;
+          z-index: 100;
+          font-family: Arial, sans-serif;
+        ">
+          <h3 style="margin: 0 0 15px 0; text-align: center;">캡처할 창을 선택하세요 (${windows.length}개)</h3>
+          <div id="windowListContainer" style="
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 10px;
+          "></div>
+          <button id="cancelWindowSelect" style="
+            margin-top: 15px;
+            padding: 8px 16px;
+            background: #666;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            display: block;
+            margin-left: auto;
+            margin-right: auto;
+          ">취소</button>
+        </div>
+      `;
+      
+      document.body.appendChild(windowList);
+      
+      const container = document.getElementById('windowListContainer');
+      
+      windows.forEach(win => {
+        const windowItem = document.createElement('div');
+        windowItem.style.cssText = `
+          border: 2px solid #333;
+          border-radius: 8px;
+          padding: 10px;
+          cursor: pointer;
+          transition: border-color 0.2s;
+          text-align: center;
+          background: rgba(255, 255, 255, 0.1);
+        `;
+        
+        windowItem.innerHTML = `
+          <img src="${win.thumbnail}" style="
+            width: 100%;
+            height: 100px;
+            object-fit: cover;
+            border-radius: 4px;
+            margin-bottom: 8px;
+          ">
+          <div style="
+            font-size: 12px;
+            word-break: break-word;
+            line-height: 1.2;
+          ">${win.name || '제목 없는 창'}</div>
+        `;
+        
+        windowItem.addEventListener('mouseover', () => {
+          windowItem.style.borderColor = '#00ff00';
+        });
+        
+        windowItem.addEventListener('mouseout', () => {
+          windowItem.style.borderColor = '#333';
+        });
+        
+        windowItem.addEventListener('click', () => {
+          captureWindow(win.id);
+          document.body.removeChild(windowList);
+        });
+        
+        container.appendChild(windowItem);
+      });
+      
+      document.getElementById('cancelWindowSelect').addEventListener('click', () => {
+        document.body.removeChild(windowList);
+        ipcRenderer.invoke('cancel-capture');
+      });
+    }
+
+    loadScreenshots();
+  </script>
+</body>
+</html>

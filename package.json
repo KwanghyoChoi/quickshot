@@ -1,0 +1,33 @@
+{
+  "name": "quickshot",
+  "version": "1.0.0",
+  "description": "멀티모니터 환경과 다양한 DPI 설정을 지원하는 화면 캡처 애플리케이션",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build": "electron-builder",
+    "dist": "electron-builder --win"
+  },
+  "keywords": ["screen capture", "screenshot", "electron", "multi-monitor"],
+  "author": "Dr.Choi_Honors",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1"
+  },
+  "dependencies": {
+    "electron-localshortcut": "^3.2.1"
+  },
+  "build": {
+    "appId": "com.drchoi.quickshot",
+    "productName": "Quickshot",
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "icon.ico"
+    }
+  }
+}
